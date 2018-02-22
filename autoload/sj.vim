@@ -48,7 +48,6 @@ endfunction
 " function! sj#SetIndent(lineno, indent)
 "
 " Sets the indent of the given line numbers to "indent" amount of whitespace.
-" For now, works only with spaces, not with tabs.
 "
 function! sj#SetIndent(...)
   if a:0 == 3
@@ -61,7 +60,18 @@ function! sj#SetIndent(...)
     let indent       = a:2
   endif
 
-  let whitespace = repeat(' ', indent)
+  let is_tabs = &l:expandtab
+  let shift = shiftwidth()
+
+  if is_tabs == 0
+    if shift > 0
+      let indent = indent / shift
+    endif
+
+    let whitespace = repeat('\t', indent)
+  else
+    let whitespace = repeat(' ', indent)
+  endif
 
   exe start_lineno.','.end_lineno.'s/^\s*/'.whitespace
 
@@ -173,6 +183,11 @@ function! sj#GetMotion(motion)
   exec 'silent normal! '.a:motion.'"zy'
   let text = @z
 
+  if text == ''
+    " nothing got selected, so we might still be in visual mode
+    exe "normal! \<esc>"
+  endif
+
   call setreg('z', saved_register_text, saved_register_type)
   call sj#PopCursor()
 
@@ -229,6 +244,11 @@ endfunction
 " Execute sj#Trim on each item of a List
 function! sj#TrimList(list)
   return map(a:list, 'sj#Trim(v:val)')
+endfunction
+
+" Remove blank strings from the List
+function! sj#RemoveBlanks(list)
+  return filter(a:list, 'v:val !~ "^\\s*$"')
 endfunction
 
 " Searching for patterns {{{1

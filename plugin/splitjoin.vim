@@ -67,6 +67,8 @@ function! s:Split()
   silent! foldopen
 
   let saved_view = winsaveview()
+  let saved_whichwrap = &whichwrap
+  set whichwrap-=l
 
   for callback in b:splitjoin_split_callbacks
     try
@@ -74,6 +76,7 @@ function! s:Split()
 
       if call(callback, [])
         silent! call repeat#set("\<plug>SplitjoinSplit")
+        let &whichwrap = saved_whichwrap
         return 1
       endif
 
@@ -83,6 +86,7 @@ function! s:Split()
   endfor
 
   call winrestview(saved_view)
+  let &whichwrap = saved_whichwrap
   return 0
 endfunction
 
@@ -94,12 +98,17 @@ function! s:Join()
   " expand any folds under the cursor, or we might replace the wrong area
   silent! foldopen
 
+  let saved_view = winsaveview()
+  let saved_whichwrap = &whichwrap
+  set whichwrap-=l
+
   for callback in b:splitjoin_join_callbacks
     try
       call sj#PushCursor()
 
       if call(callback, [])
         silent! call repeat#set("\<plug>SplitjoinJoin")
+        let &whichwrap = saved_whichwrap
         return 1
       endif
 
@@ -108,6 +117,8 @@ function! s:Join()
     endtry
   endfor
 
+  call winrestview(saved_view)
+  let &whichwrap = saved_whichwrap
   return 0
 endfunction
 

@@ -386,9 +386,10 @@ function! sj#ruby#JoinBlock()
 
   let lines = sj#GetLines(do_line_no, end_line_no)
   let lines = sj#TrimList(lines)
+  let lines = sj#RemoveBlanks(lines)
 
   let do_line  = substitute(lines[0], do_pattern, '{\1', '')
-  let body     = join(lines[1:-2], '; ')
+  let body     = s:JoinBlockBody(lines[1:-2])
   let body     = sj#Trim(body)
   let end_line = substitute(lines[-1], 'end', '}', '')
 
@@ -400,6 +401,29 @@ function! sj#ruby#JoinBlock()
   call sj#ReplaceLines(do_line_no, end_line_no, replacement)
 
   return 1
+endfunction
+
+function! s:JoinBlockBody(lines)
+  let lines = a:lines
+
+  if len(lines) < 1
+    return ''
+  endif
+
+  let body = lines[0]
+  " horrible regex taken from vim-ruby
+  let continuation_regex =
+        \ '\%(%\@<![({[\\.,:*/%+]\|\<and\|\<or\|\%(<%\)\@<![=-]\|:\@<![^[:alnum:]:][|&?]\|||\|&&\)\s*\%(#.*\)\=$'
+
+  for line in lines[1:]
+    if body =~ continuation_regex
+      let body .= ' '.line
+    else
+      let body .= '; '.line
+    endif
+  endfor
+
+  return body
 endfunction
 
 function! sj#ruby#SplitCachingConstruct()
@@ -451,38 +475,46 @@ function! sj#ruby#SplitOptions()
   " Variables:
   "
   " option_type:   ['option', 'hash']
-  " function_type: ['with_spaces', 'with_round_braces']
+  " function_type: ['none', 'with_spaces', 'with_round_braces']
   "
 
   call sj#PushCursor()
-  let [from, to] = sj#argparser#ruby#LocateHash()
+  let [function_from, function_to, function_type] = sj#argparser#ruby#LocateFunction()
   call sj#PopCursor()
 
-  if from < 0 || !sj#CursorBetween(from, to)
-    call sj#PushCursor()
-    let [from, to, function_type] = sj#argparser#ruby#LocateFunction()
-    call sj#PopCursor()
+  call sj#PushCursor()
+  let [hash_from, hash_to] = sj#argparser#ruby#LocateHash()
+  call sj#PopCursor()
 
-    let option_type = 'option'
-  else
+  if hash_from >= 0 && function_from < 0
     let option_type = 'hash'
+  else
+    let option_type = 'option'
+  endif
+
+  if function_from >= 0
+    let from = function_from
+    let to = function_to
+  else
+    let from = hash_from
+    let to = hash_to
   endif
 
   if from < 0
     return 0
   endif
 
-  " with options, we may not know the end, but we do know the start
-  if option_type == 'option' && to < 0 && !sj#CursorBetween(from, col('$'))
+  if to >= 0 && !sj#CursorBetween(from - 1, to + 1)
     return 0
   endif
 
-  " if we know both start and end, but the cursor is not there, bail out
-  if option_type == 'option' && to >= 0 && !sj#CursorBetween(from, to)
+  if to < 0 && !sj#CursorBetween(from - 1, col('$'))
     return 0
   endif
 
-  let [from, to, args, opts, hash_type] = sj#argparser#ruby#ParseArguments(from, to, getline('.'))
+  let start_lineno = line('.')
+  let [from, to, args, opts, hash_type] =
+        \ sj#argparser#ruby#ParseArguments(from, to, getline('.'))
 
   if len(opts) < 1 && len(args) > 0 && option_type == 'option'
     " no options found, but there are arguments, split those
@@ -506,7 +538,6 @@ function! sj#ruby#SplitOptions()
   endif
 
   let replacement = ''
-  let alignment_start = line('.')
 
   " first, prepare the already-existing arguments
   if len(args) > 0
@@ -520,21 +551,17 @@ function! sj#ruby#SplitOptions()
       " Example: one = {:two => 'three'}
       "
       let replacement .= "{\n"
-      let alignment_start += 1
     elseif function_type == 'with_round_braces' && len(args) > 0
       " Example: create(:inquiry, :state => state)
       "
       let replacement .= " {\n"
-      let alignment_start += 1
     elseif function_type == 'with_round_braces' && len(args) == 0
       " Example: create(one: 'two', three: 'four')
       "
       let replacement .= "{\n"
-      let alignment_start += 1
     else
       " add braces in all other cases
       let replacement .= " {\n"
-      let alignment_start += 1
     endif
 
   else " !sj#settings#Read('ruby_curly_braces')
@@ -543,16 +570,15 @@ function! sj#ruby#SplitOptions()
       " Example: User.new(:one, :two => 'three')
       "
       let replacement .= "\n"
-      let alignment_start += 1
     elseif option_type == 'option' && function_type == 'with_spaces' && len(args) > 0
       " Example: User.new :one, :two => 'three'
       "
       let replacement .= "\n"
-      let alignment_start += 1
-    elseif option_type == 'option' && function_type == 'with_round_braces' && len(args) == 0
-      " Example: User.new(:two => 'three')
+    elseif option_type == 'hash' && function_type == 'none'
+      " Not a function call, but a hash
+      " Example: one = {:two => "three"}
       "
-      " no need to add anything
+      let replacement .= "{\n"
     endif
 
   endif
@@ -560,20 +586,37 @@ function! sj#ruby#SplitOptions()
   " add options
   let replacement .= join(opts, ",\n")
 
+  " add trailing comma
+  if sj#settings#Read('ruby_trailing_comma') || sj#settings#Read('trailing_comma')
+    let replacement .= ','
+  endif
+
   " add closing brace
   if !sj#settings#Read('ruby_curly_braces') && option_type == 'option' && function_type == 'with_round_braces'
-    " no need to add anything
-  elseif sj#settings#Read('ruby_curly_braces') || option_type == 'hash' || len(args) == 0
-    if sj#settings#Read('ruby_trailing_comma') || sj#settings#Read('trailing_comma')
-      let replacement .= ','
+    if sj#settings#Read('ruby_hanging_args')
+      " no need to do anything
+    else
+      let replacement = "\n".replacement."\n"
     endif
-
+  elseif sj#settings#Read('ruby_curly_braces') || option_type == 'hash' || len(args) == 0
     let replacement .= "\n}"
   endif
 
   call sj#ReplaceCols(from, to, replacement)
 
   if sj#settings#Read('align') && hash_type != 'mixed'
+    " find index of first option
+    let first_keyword_index = 0
+    for line in split(replacement, "\n", 1)
+      let line = substitute(sj#Trim(line), ',$', '', '')
+      if index(opts, line) >= 0
+        break
+      endif
+
+      let first_keyword_index += 1
+    endfor
+
+    let alignment_start = start_lineno + first_keyword_index
     let alignment_end = alignment_start + len(opts) - 1
 
     if hash_type == 'classic'
@@ -598,12 +641,12 @@ function! sj#ruby#SplitArray()
     return 0
   endif
 
-  let [from, to, args; _rest] = sj#argparser#ruby#ParseArguments(from + 1, to - 1, getline('.'))
+  let [from, to, items] = sj#argparser#ruby#ParseArray(from + 1, to - 1, getline('.'))
   if from < 0
     return 0
   endif
 
-  let replacement = "\n".join(args, ",\n")."\n"
+  let replacement = "\n".join(items, ",\n")."\n"
   call sj#ReplaceCols(from, to, replacement)
   return 1
 endfunction
@@ -831,6 +874,127 @@ function! sj#ruby#JoinArrayLiteral()
   return 1
 endfunction
 
+function! sj#ruby#JoinModuleNamespace()
+  if !exists('g:loaded_matchit')
+    return 0
+  endif
+
+  let namespace_pattern = '^\s*module\s\+\zs[A-Z]\(\k\|::\)\+\s*$'
+  let class_pattern = '^\s*class\s\+\zs[A-Z]\k\+\s*\(\k\|::\)\+\s*\%(<\s\+\S\+\)\=$'
+
+  if search(namespace_pattern, 'Wc', line('.')) <= 0
+    return 0
+  endif
+
+  " Pin the starting point
+  let module_start_line = line('.')
+  let start_indent = indent('.')
+  let modules = [expand('<cWORD>')]
+  let keyword = 'module'
+  normal! j0
+
+  " Find the end point
+  let module_end_line = module_start_line
+  while search(namespace_pattern, 'Wc', line('.')) > 0
+    let module_end_line = line('.')
+    call add(modules, expand('<cWORD>'))
+    normal! j0
+  endwhile
+
+  if search(class_pattern, 'Wc', line('.')) > 0
+    " then the end is a class line
+    let module_end_line = line('.')
+    call add(modules, sj#GetMotion('vg_'))
+    let keyword = 'class'
+  else
+    " go back one line, to the last module
+    normal! k
+  endif
+
+  if len(modules) < 2
+    " nothing to join
+    return 0
+  endif
+
+  " go to the end of the deepest-nested module/class:
+  call search('^\s*\zs\%(module\|class\)', 'Wbc', line('.'))
+  normal %
+  let content_end_line = line('.') - 1
+  " delete the right amount of ends and go back
+  let range = (content_end_line + 1).','.(content_end_line + (len(modules) - 1))
+  silent exe range.'delete _'
+  exe module_end_line
+
+  if module_end_line + 1 <= content_end_line
+    " there's content in the class/module, so shift its indentation
+    let range = (module_end_line + 1).','.content_end_line
+    silent exe range.repeat('<', len(modules) - 1)
+  endif
+
+  " replace the module line
+  call sj#ReplaceLines(module_start_line, module_end_line, keyword.' '.join(modules, '::'))
+  return 1
+endfunction
+
+function! sj#ruby#SplitModuleNamespace()
+  let namespace_pattern = '^\s*\%(module\|class\)\s\+[A-Z]\k\+::'
+
+  if search(namespace_pattern, 'Wbc', line('.')) <= 0
+    return 0
+  endif
+
+  let start_line = line('.')
+
+  " is it a class or module?
+  let keyword = expand('<cword>')
+  " get the module path
+  if search(keyword.'\s\+\zs[A-Z]\k\+', 'W', line('.')) <= 0
+    return 0
+  endif
+  let module_path = expand('<cWORD>')
+  if search('\s\+<\s\+\S\+$', 'W', line('.')) > 0
+    let parent = sj#GetMotion('vg_')
+  else
+    let parent = ''
+  endif
+  let modules = split(module_path, '::')
+
+  if len(modules) < 2
+    " nothing to split
+    return 0
+  endif
+
+  " build up new lines
+  let lines = []
+  for module in modules[:-2]
+    call add(lines, 'module '.module)
+  endfor
+  call add(lines, keyword.' '.modules[-1].parent)
+
+  " shift contents of the class/module
+  if search('^\s*\zs\%(module\|class\)', 'Wbc', line('.')) <= 0
+    return 0
+  endif
+  normal %
+  let end_line = line('.') - 1
+  echomsg string([start_line, end_line])
+  if end_line - start_line > 0
+    let range = start_line.','.end_line
+    silent exe range.repeat('>', len(modules) - 1)
+  endif
+
+  " replace the module line
+  exe start_line
+  call sj#ReplaceMotion('V', join(lines, "\n"))
+
+  " add the necessary amount of "end"s
+  exe (end_line + len(lines))
+  let ends = split(repeat("end\n", len(modules)), "\n")
+  call sj#ReplaceMotion('V', join(ends, "\n"))
+
+  return 1
+endfunction
+
 " Helper functions
 
 function! s:JoinHashWithCurlyBraces()
@@ -864,6 +1028,7 @@ function! s:JoinHashWithRoundBraces()
   let body = sj#GetMotion('Vi(',)
   if sj#settings#Read('normalize_whitespace')
     let body = substitute(body, '\s*=>\s*', ' => ', 'g')
+    let body = substitute(body, '\s\+\k\+\zs:\s\+', ': ', 'g')
   endif
 
   " remove trailing comma
@@ -925,7 +1090,7 @@ function! s:FindComments(start_line_no, end_line_no)
     exe lineno
     normal! 0
 
-    while search('\s*#.*$', 'W', lineno) > 0
+    while search('\s*#.*$', 'Wc', lineno) > 0
       let col = col('.')
 
       normal! f#
