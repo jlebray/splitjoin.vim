@@ -569,6 +569,21 @@ describe "ruby" do
     EOF
   end
 
+  specify "hashes with spaces in them" do
+    set_file_contents <<-EOF
+      a_hash = { a_key: "a longer value" }
+    EOF
+
+    vim.search 'a_key'
+    split
+
+    assert_file_contents <<-EOF
+      a_hash = {
+        a_key: "a longer value"
+      }
+    EOF
+  end
+
   specify "caching constructs" do
     set_file_contents <<-EOF
       @two ||= 1 + 1
@@ -1369,14 +1384,33 @@ describe "ruby" do
       assert_file_contents <<-EOF
         array = [
           0,
-          { a: 1 }
+          a: 1
         ]
       EOF
 
       vim.search 'array ='
       join
 
-      assert_file_contents "array = [0, { a: 1 }]"
+      assert_file_contents "array = [0, a: 1]"
+    end
+
+    specify "last hash inside array can also be bracketless" do
+      set_file_contents "array = [0, a: 1]"
+
+      vim.search '0'
+      split
+
+      assert_file_contents <<-EOF
+        array = [
+          0,
+          a: 1
+        ]
+      EOF
+
+      vim.search 'array ='
+      join
+
+      assert_file_contents "array = [0, a: 1]"
     end
   end
 
